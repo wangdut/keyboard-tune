@@ -1,0 +1,25 @@
+# Python 字节码缓存（跑程序或 compileall 都会生成，不该进版本库）
+__pycache__/
+*.py[cod]
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 打包产物
+build/
+dist/
+*.egg-info/
+
+# 运行期日志（开发期的临时探针脚本用完后直接删除，不靠忽略规则长期保留）
+*.log
+# 注意：这里不能写 `_*.py`，它会连带忽略 `__init__.py` / `__main__.py`
+
+# Windows 资源管理器会在桌面目录下留下的缩略图标记
+Thumbs.db
+desktop.ini
+
+# 编辑器
+.vscode/
+.idea/

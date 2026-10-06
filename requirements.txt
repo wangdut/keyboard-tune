@@ -1,0 +1,16 @@
+# 关键依赖与安装命令见 README.md
+# 一次性安装：python -m pip install -r requirements.txt
+#
+# 版本下限按实际验证过的组合填写（pynput 1.8 / pystray 0.19 / Pillow 10 / pygame 2.6）。
+
+# 全局键盘监听（低级钩子，只读不拦截）
+pynput>=1.7.6
+
+# 系统托盘图标与右键菜单
+pystray>=0.19.4
+
+# 托盘图标绘制（程序内现画键盘图案，不依赖外部图片文件）
+Pillow>=9.0.0
+
+# 音频后端首选：真复音、小 buffer 低延迟；不可用时自动回退到系统 winsound
+pygame>=2.5.0
