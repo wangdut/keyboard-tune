@@ -16,6 +16,10 @@
   3. 音色按"键盘分区 = 一个音区 = 一个音色家族"划分；同一家族内准备 a/b 两个
      细微变体，按棋盘格 (row + col) % 2 交替。这样"同一音区质感统一"与
      "相邻按键不得同音色"两条要求同时成立（网格相邻必然奇偶不同）。
+  4. 大按键（物理宽度 ≥ 1.5u 且承担打字节奏）走重音档：家族名不变（分区统一仍然成
+     立），只把棋盘格的 a/b 换成 c/d。需要两个重音档是因为主键区左侧有一列相连的大
+     按键（Tab–CapsLock–Shift），单档会让相邻三键的音色标识完全相同；沿用棋盘格奇偶
+     正好把它们错开成 d–c–d（相邻格奇偶必不同）。
 """
 from . import layout as L
 
@@ -42,6 +46,24 @@ ZONE_FAMILY = {
     L.ZONE_NAV: "soft",        # 编辑/方向键：柔化玻璃感
     L.ZONE_NUM: "warm",        # 小键盘：温暖木质感（低音区）
 }
+
+# 大按键（重音层）：标准 ANSI 104 键上物理宽度 ≥ 1.5u、且承担打字节奏的那几个。
+# 修饰键（Ctrl/Alt/Win，1.25u）不算：它们是"按住"的键，给重音只会抬高背景密度；
+# 小键盘的 0/../+/× 虽是宽键也不算：需求 §三 把整个数字键区定为"低 10~15%、
+# 不抢主音"的点缀层，往里掺节拍重音会把两个分区要求对撞（NumEnter 是例外：它是
+# 回车，按 §三 的"大按键"一条归位）。
+ACCENT_VKS = frozenset((
+    L.VK_SPACE,          # 6.25u 空格：最长的重拍
+    L.VK_RETURN,         # 2.25u 回车：乐句收束
+    L.VK_NUM_ENTER,      # 小键盘回车：数字录入的收束
+    L.VK_BACK,           # 2u   退格
+    L.VK_SHIFT_L,        # 2.25u
+    L.VK_SHIFT_R,        # 2.75u：换指必击，天然落在拍点上
+    L.VK_TAB,            # 1.5u
+    L.VK_CAPITAL,        # 1.75u
+))
+REGULAR_TIERS = "ab"     # 常规档：同音区内的细微变体（棋盘格）
+ACCENT_TIERS = "cd"      # 重音档：更闷、更响、琴条更厚（见 voice.STRIKE / voice.ACCENT_BAR）
 
 # ------------------------------------------------------------------ 音高填充
 # 乐句收束键：低音区根音，先占位，让相邻键自动避开同音高
@@ -121,8 +143,10 @@ PITCH_BY_VK = _build_pitch_table()
 
 
 def _timbre_for_kd(kd):
-    family = ZONE_FAMILY[kd.zone]
-    return "%s%s" % (family, "ab"[(kd.row + kd.col) % 2])
+    """家族（分区）+ 敲击档（棋盘格）；大按键用重音档 c/d，其余用常规档 a/b。"""
+    fam = ZONE_FAMILY[kd.zone]
+    tiers = ACCENT_TIERS if kd.vk in ACCENT_VKS else REGULAR_TIERS
+    return "%s%s" % (fam, tiers[(kd.row + kd.col) % 2])
 
 
 TIMBRE_BY_VK = {vk: _timbre_for_kd(kd) for vk, kd in L.KEYS.items()}

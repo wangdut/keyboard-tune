@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-资源占用自检：验证"内存 ≤50MB、空闲 CPU ≤1%"这两条硬指标。
+资源占用自检：验证"内存 ≤100MB、空闲 CPU ≤1%"这两条硬指标。
 
   python tests/check_resources.py [每窗秒数] [窗口数]
+
+内存上限按需求裁定放宽到 100MB（预采样音色库常驻），CPU 那条仍按原文 ≤1%。
 
 测量口径：进程工作集（WorkingSet，任务管理器"内存"同一列）与进程 CPU 时间增量。
 包含完整链路：音频后端 + 全部槽位渲染 + 全局键盘钩子 + 托盘图标。
@@ -15,6 +17,14 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+
+# GBK 控制台下写中文/数学符号失败时，traceback 本身也打印不出去（实测本脚本会“静默退
+# 出 1”：什么都看不到）。errors=replace 保证结论与原因都能落盘，与 check_acoustics 同做法。
+try:
+    sys.stdout.reconfigure(errors="replace")
+    sys.stderr.reconfigure(errors="replace")
+except Exception:
+    pass
 
 
 class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
@@ -69,14 +79,17 @@ def main(seconds=10.0, windows=4):
     app.watcher.start()
     app.tray.start()                      # 托盘也算常驻开销（pystray + Pillow）
 
-    # 等后台预渲染线程把槽位补齐：启动期的 CPU 是一次性的，不能算进"空闲占用"
+    # 等后台预热线程把采样全部取完：启动期的 CPU 是一次性的，不能算进"空闲占用"。
+    # 条数 = 槽位 x 变体（_stems 的键是 (槽, 变体)），拿 slot_count 当上限会在只加载
+    # 1/6 时就放行，把预热 CPU 混进第一个采样窗口。
+    #
+    # 不再做“逐槽 _stem() 一遍”的兜底：新签名是 _stem(idx, var)，旧写法少一个参数，
+    # 而且预热本来就把每条都取过了，重复一遍只会干扰读数。
+    want = app.engine.slot_count * getattr(app.engine, "_nv", 1)
     t0 = time.monotonic()
-    while len(app.engine._stems) < app.engine.slot_count \
-            and time.monotonic() - t0 < 60.0:
+    while len(app.engine._stems) < want and time.monotonic() - t0 < 120.0:
         time.sleep(0.2)
     render_s = time.monotonic() - t0
-    for i in range(app.engine.slot_count):    # 兜底：确保真的全都渲染完了
-        app.engine._stem(i)
 
     work, peak = memory_mb()
     # 热身期单独丢弃：SDL 混音线程刚建、延迟加载的 DLL、首次 GC 都会污染读数。
@@ -96,8 +109,8 @@ def main(seconds=10.0, windows=4):
     print("-" * 56)
     print("音频后端 / 按键覆盖     : %s / %d 键" % (app.engine.backend_name, len(L.KEYS)))
     print("全部采样常驻内存      : %.2f MB" % (app.engine.memory_bytes() / 1048576.0))
-    print("预渲染耗时            : %.2f s（%d 槽位，一次性开销）"
-          % (render_s, app.engine.slot_count))
+    print("预热耗时            : %.2f s（%d 条，一次性开销）"
+          % (render_s, want))
     print("工作集（渲染后/空闲后）: %.1f MB / %.1f MB   峰值 %.1f MB"
           % (work, work2, max(peak, peak2)))
     print("空闲 CPU 分窗（每窗 %.0f s）: %s"
@@ -106,8 +119,8 @@ def main(seconds=10.0, windows=4):
           % (mean_tail, worst))
     print("-" * 56)
     ok = True
-    if max(peak, peak2) > 50.0:
-        print("超标：工作集 %.1f MB > 50 MB" % max(peak, peak2))
+    if max(peak, peak2) > 100.0:
+        print("超标：工作集 %.1f MB > 100 MB" % max(peak, peak2))
         ok = False
     if worst > 1.0:
         print("超标：空闲 CPU 最坏窗 %.2f%% > 1%%" % worst)

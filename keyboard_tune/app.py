@@ -71,8 +71,15 @@ class App(object):
         return ok
 
     def status_text(self):
-        return "后端 %s · %d 键 · 槽位 %d" % (
-            self.engine.backend_name, len(L.KEYS), self.engine.slot_count)
+        """
+        就绪状态一行字。听着不对/完全没声时先看这一行：它能说清用的是哪个后端、
+        哪个音色包、以及采样到底是从磁盘库读的还是在实时补渲（后者意味着没建库）。
+        """
+        bank = self.engine.bank
+        src = ("采样库 %d 条" % bank.count()) if self.engine.bank_ready else "实时渲染"
+        return "后端 %s · %d 键 · 槽位 %d · 音色 %s · %s" % (
+            self.engine.backend_name, len(L.KEYS), self.engine.slot_count,
+            self.engine.voice_name, src)
 
     # ------------------------------------------------------------ 生命周期
     def start(self):

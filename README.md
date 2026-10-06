@@ -7,6 +7,9 @@
 所以连续打字（尤其打中文）听起来是连贯的乐句而不是随机噪声。托盘里可以调音量、
 设置开机自启动、退出。
 
+音色是**原声打击乐质感**（马林巴/木琴/钢片琴/低音条），由模态合成引擎离线渲染成
+预采样 WAV 库后播放，不是方波/锯齿那一类基础波形实时合成，详见 §6。
+
 ---
 
 ## 1. 安装
@@ -141,16 +144,62 @@ MRV 回溯 + 分支定界 + 坐标下降/2-opt 精修 + 随机重启），输入
 - 残余不协和只出现在低频连击上：18 处小二度/大七度的最大权重 508（对比硬约束
   下界 1000），三全音仅剩 2 处（权重 108 与 3）
 
-## 6. 性能指标（实测）
+## 6. 音色质感与采样库（需求 §一/§三/§四）
 
-`python tests/check_resources.py 10 5` 的实测口径（完整链路：音频后端 + 71 个槽位
-全部渲染 + 全局钩子 + 托盘图标；每窗 10s 共 5 窗，丢弃热身窗后按**最坏窗**判定）：
+**音效生成走需求 §四.1 的方案 B（预采样 WAV）**，未采用 `pyfluidsynth`：SoundFont
+需要外部 .sf2 资产（体积、许可、机器差异都不可控），而方案 B 的音色、音准、包络、混响
+全部在本仓库里可验收、可回归。**没有新增任何第三方依赖**：渲染用标准库（`math`/`array`/
+`random`/`zlib`），读写 WAV 用 `wave`，播放沿用原有 pygame/winsound——
+`requirements.txt` 不变，不需要额外的 `pip install`。
+
+```
+keyboard_tune/voice.py        模态合成引擎 + 三个音色包 + 配置项参数表（单一真相）
+keyboard_tune/voicebank.py     预渲染采样库：读写、指纹校验、标定曲线持久化、缺失回退
+scripts/build_voice_bank.py    离线高精度建库（逐音高稠密标定，曲线写进 manifest）
+```
+
+声音形状：非谐模态列（每模态独立指数衰减 + 基频分裂拍颤）+ Chamberlin 带通琴槌瞬态
++ 10~30ms attack + Schroeder 房间混响 + tilt 低通抗刺耳 + TPDF 抖动 16bit。
+三个包均可用配置切换：`acoustic`（默认，玫瑰木马林巴）/ `mellow`（木质感、低通 6kHz、
+短尾，安静环境）/ `bright`（钢片琴上位、高频空气感更多）。
+
+`%APPDATA%\KeyboardTune\config.json` 里可写的音色项（越界自动夹回下表的硬上限，
+不写就跟随音色包自带的调校；区间与含义只在 `voice.CONFIG_TUNES` 里写一份）：
+
+| 配置键 | 含义 | 合法区间（= 需求硬指标） |
+| --- | --- | --- |
+| `voice_pack` | 音色包 | `acoustic`/`mellow`/`bright`，非法值当没写 |
+| `reverb_wet` | 混响发送量 | 0~0.07（实测占比 = 发送量的 1.11~1.39 倍，上限这么定才能保证“湿声 ≤10%”） |
+| `reverb_rt` | 房间混响时间 | 0.02~0.20s（≤200ms） |
+| `tail_ms` | 尾音预算 | 100~300ms |
+| `humanize_cents` | 音高随机范围 | 0~5 音分 |
+| `humanize_db` | 音量随机范围 | 0~1dB |
+| `humanize_variants` | 每键变体数 | 1~12 |
+| `zone_tick_gain`/`zone_soft_gain`/`zone_warm_gain` | 分区响量目标 | 0.85~0.90（低 10~15%） |
+
+分区音色分层（需求 §三）：主键区为基准；数字/功能/方向键区同风格稍暗且响量低 12.5%
+（标定后逐槽精确落在 0.875）；空格/回车/退格/Shift 走重音档（`keyd`/`softd`/…），
+琴条换成共鸣更厚的低音模型，比常规档高次模态低 5~8dB、响量高 7~25%，当节拍重音用。
+
+采样库命令（可选；不建库也能跑，启动后后台逐条补渲，单键 16ms）：
+
+```
+python scripts\build_voice_bank.py            # 79 槽 x 6 变体 = 474 条，实测 12.9s / 11.5MB
+python scripts\build_voice_bank.py --check     # 校验库与当前配置是否一致（不一致返回非 0）
+python tests\check_acoustics.py               # 18 项声学硬指标验收（攻击/尾音/混响/泛音/分区…）
+```
+
+## 7. 性能指标（实测）
+
+`python tests/check_resources.py 8 3` 的实测口径（完整链路：音频后端 + 采样库 79 槽
+ x 6 变体 = 474 条全部常驻 + 全局钩子 + 托盘图标；每窗 8s 共 3 窗，丢弃热身窗后按
+**最坏窗**判定）：
 
 | 指标 | 需求 | 实测 |
 | --- | --- | --- |
-| 常驻内存 | ≤50MB | 工作集峰值 **45.4MB**（其中采样仅 1.42MB，其余是 CPython+SDL+Pillow+pystray 运行时；同样含钩子与托盘、回退到 `winsound` 时为 **29.8MB**） |
-| 空闲 CPU | ≤1% | **最坏窗 0.62%**，稳态均值 0.16–0.35%（预渲染是启动期一次性开销，约 1.4s，已被丢弃的热身窗吃掉） |
-| 按键延迟 | ≤50ms | SDL buffer 256 帧 = **5.8ms**，按键路径只有"查表 + 一次后端调用" |
+| 常驻内存 | ≤100MB（需求裁定放宽） | 工作集峰值 **56.5MB**（其中采样库常驻 **11.51MB**，474 条 44.1kHz/16bit 单声道；其余是 CPython+SDL+Pillow+pystray 运行时） |
+| 空闲 CPU | ≤1% | **最坏窗 0.78%**，稳态均值 0.46%（建好库后预热只需 **0.20s**：那 474 条是从盘上读而不是现算） |
+| 按键延迟 | ≤50ms | SDL buffer 256 帧 = **5.8ms**；采样命中时按键路径只有"查表 + 一次后端调用"，未命中现场补渲一帧 **16ms**（用 fast 口径，听感差异已量化：响量 <0.6dB） |
 | 复音 | 多键同响 | 24 通道；通道占满时 `find_channel(True)` **抢用最旧通道**（打断而非排队），从根上避免音效堆积 |
 | 不干扰输入 | 100% 保留 | 回调永不返回 `False`，pynput 钩子为只读低级钩子 |
 
@@ -168,7 +217,7 @@ MRV 回溯 + 分支定界 + 坐标下降/2-opt 精修 + 随机重启），输入
   （`SetErrorMode` 关掉模态错误对话框），回调内部异常被吞掉以免终止钩子线程。
 - 日志：`%APPDATA%\KeyboardTune\run.log`（批量落盘、超 512KB 自动截断）。
 
-## 7. 目录结构
+## 8. 目录结构
 
 ```
 keyboard-tune/
@@ -178,7 +227,9 @@ keyboard-tune/
 ├── keyboard_tune/
 │   ├── layout.py            一、键盘适配：104 键基准表 + 分区 + 行列 + 相邻关系
 │   ├── notes.py             二、旋律映射：按键 -> (音高, 音色) 的静态表与填充规则
-│   ├── audio.py             三、音效管理：PCM 合成 + 后端(复音/回退) + 音量 + 自动重复
+│   ├── voice.py             二/三、音色引擎：模态合成 + 包络 + 混响 + 音色包 + 配置参数表
+│   ├── voicebank.py         四、预采样库：WAV 读写 + 参数指纹 + 标定曲线持久化 + 缺失回退
+│   ├── audio.py             三、音效管理：采样调度(库/补渲) + 后端(复音/回退) + 音量 + 自动重复
 │   ├── listener.py          三、键盘监听：pynput 全局钩子 + VK 归一化 + 看门狗
 │   ├── tray.py              四、系统托盘：Pillow 画图标 + pystray 菜单
 │   ├── config.py            五、配置存储：原子写 + 损坏回退 + 线程安全
@@ -188,23 +239,28 @@ keyboard-tune/
 │   └── __main__.py          python -m keyboard_tune
 ├── scripts/
 │   ├── pinyin_model.py      拼音合法音节 -> 字母连击权重图（映射求解的输入）
-│   └── build_note_map.py    约束求解器：生成/证明/复验 notes.py 的音高表
+│   ├── build_note_map.py    约束求解器：生成/证明/复验 notes.py 的音高表
+│   └── build_voice_bank.py  离线高精度渲染采样库（逐音高稠密标定，曲线写进 manifest）
 └── tests/
     ├── test_mapping_rules.py  15 项规则验收（乐理 + 键盘适配 + 音频）
-    ├── test_runtime.py        8 项运行时冒烟（配置/VK/引擎/托盘/自启动/整链路）
+    ├── metrics.py            声学度量（攻击/尾音/泛音/空气感…）供验收与探针共用
+    ├── check_acoustics.py     18 项音色声学硬指标（需求 §一/§三/§四）
+    ├── test_runtime.py        10 项运行时冒烟（配置/音色项/VK/引擎/托盘/自启动/建库/整链路）
     └── check_resources.py     内存与空闲 CPU 实测
 ```
 
-## 8. 自检与回归
+## 9. 自检与回归
 
 ```powershell
-python tests\test_mapping_rules.py   # 映射规则（一/二/五条全部条款）
-python tests\test_runtime.py         # 运行时链路（会真的响两声）
-python tests\check_resources.py 10 5     # 内存 / 空闲 CPU（每窗 10s × 5 窗，按最坏窗判定）
+python tests\test_mapping_rules.py   # 映射规则（一/二/五条全部条款，15 项）
+python tests\check_acoustics.py      # 音色声学硬指标（需求 §一/§三/§四，18 项）
+python tests\test_runtime.py         # 运行时链路（配置/音色项/后端/VK/托盘/建库脚本，会真的响两声）
+python tests\check_resources.py 8 3     # 内存 / 空闲 CPU（每窗 8s × 3 窗，按最坏窗判定）
+python scripts\build_voice_bank.py   # 离线建采样库（--check 只校验；--quality fast 快出小库）
 python scripts\build_note_map.py --prove --budget 200000 --iters 30   # 重新求解映射表
 ```
 
-## 9. 已知限制（如实说明）
+## 10. 已知限制（如实说明）
 
 - **主 Enter 与小键盘 Enter 无法区分**：低级钩子给出的 VK 都是 `0x0D`，扩展键标志
   pynput 不暴露。小键盘 Enter 因此使用主 Enter 的音效（映射表里仍为它准备了独立音高，

@@ -1,15 +1,24 @@
 # -*- coding: utf-8 -*-
 """
-配置存储模块：音量等设置的读取/保存。
+配置存储模块：音量、自启动、以及音色参数（需求 §六.2/§六.3）的读取/保存。
 
 配置文件位置：%APPDATA%\\KeyboardTune\\config.json（当前用户目录，无需管理员权限）。
 写入采用"临时文件 + 原子替换"，程序中途被杀掉也不会留下半个坏文件；读取失败时
 自动备份原文件并回落默认值，保证程序永远能起来。
+
+音色那几项（混响量/RT60/随机化范围/各区域音量比/音色包名）的键名、合法区间、
+以及"这一项最终改成渲染参数里的哪一个"全部来自 voice.CONFIG_TUNES 那一张表：
+配置层不重复写数字，否则两边一旦漂移，用户手改 json 得到的就不是他以为的那个值。
+每一项都是可选的：缺省（null / 不写 / 非法）就沿用自己音色包里的调校值，所以换包
+不会被配置里的默认值顶掉。这些项不进托盘菜单（需求 §五.4 只要求音量/自启动），
+但改完会反映到采样库指纹上，重启后自动生效。
 """
 import json
 import os
 import tempfile
 import threading
+
+from . import voice as V
 
 APP_NAME = "KeyboardTune"
 DEFAULTS = {
@@ -17,8 +26,13 @@ DEFAULTS = {
     "muted": False,        # 静音开关（保留音量值）
     "autostart": False,    # 开机自启动（与注册表实际状态双向同步）
     "backend": "auto",     # 音效后端：auto / pygame / simpleaudio / winsound
-    "scheme": "default",   # 映射方案（预留）
+    "voice_pack": None,    # 音色包：acoustic / mellow / bright（None = 默认包）
 }
+# 需求 §六.3 的可调项：先全部置 None（"未设置"），真实默认值住在音色包里，理由见上面
+# 的模块注释。这里必须真有个键而不只是 _sanitize 里认得：load() 只保留 DEFAULTS 里
+# 出现过的键，没这个键用户手写在 json 里的音色项会在第一次读取时被静默丢掉。
+for _row in V.CONFIG_TUNES:
+    DEFAULTS[_row[0]] = None
 
 
 def config_dir():
@@ -125,7 +139,27 @@ class Config(object):
         d["autostart"] = bool(d.get("autostart", False))
         if d.get("backend") not in ("auto", "pygame", "simpleaudio", "winsound"):
             d["backend"] = "auto"
+        # 音色包名：不认识就当没写（pack_from_config 会落到默认包），而不是在这里
+        # 写死一个包名——写死了用户切到 mellow 后，下一次保存就会把选项刷掉
+        if d.get("voice_pack") not in tuple(V.pack_names()) + (None, ""):
+            d["voice_pack"] = None
+        for key, lo, hi, _attr, kind in V.CONFIG_TUNES:
+            d[key] = self._num_in(d.get(key), lo, hi, kind == "int")
         return d
+
+    @staticmethod
+    def _num_in(value, lo, hi, as_int):
+        """None 是合法值（"未设置"）；读不出数也当没写，越界则夹回区间。"""
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return None
+        if v != v:                       # NaN：json 里的 NaN/null 都不能当参数用
+            return None
+        v = min(hi, max(lo, v))
+        return int(round(v)) if as_int else v
 
     # ------------------------------------------------------------ 便捷
     @property

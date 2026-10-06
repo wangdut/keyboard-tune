@@ -285,27 +285,52 @@ def test_phrase_roots():
 
 # ------------------------------------------------------------------ 五、音频实现
 def test_audio_render():
+    """
+    采样来自音色引擎而不是旧的"正弦表实时合成"：这里只管"能不能出声、尺寸对不对"，
+    音质类的指标（尾音/泛音/分区响量）在 tests/check_acoustics.py，两边不重叠。
+    """
+    import array as _array
     bad = []
     from keyboard_tune import audio as A
+    from keyboard_tune import voice as V
     slots = N.all_slots()
     if len(set(N.TIMBRE_BY_VK.values())) < 6:
         bad.append("音色变体过少，相邻键难以区分")
-    pcm = A.render_samples(60, "keya")
-    if len(pcm) == 0:
-        bad.append("合成返回空采样")
-    if max(pcm) > 32767 or min(pcm) < -32767:
-        bad.append("采样越界（会爆音）")
-    if max(abs(min(pcm)), max(pcm)) < 3000:
-        bad.append("采样峰值过低（听不见）")
-    dur = len(pcm) / float(A.SAMPLE_RATE)
-    if dur > 0.6:
-        bad.append("单音时长 %.2fs 过长，快速打字会互相糊成一片" % dur)
-    total = sum(len(A.render_samples(m, t)) * 2 for m, t in slots[:8]) / 8.0 * len(slots)
-    if total > 40 * 1024 * 1024:
-        bad.append("全部槽位常驻采样预计 %.1f MB，超出内存预算" % (total / 1048576.0))
-    wav = A.wav_bytes(pcm)
+    pack = V.make_pack(slots=slots)
+    if not pack._calibrated:
+        bad.append("音色包未标定，分区响量会变成意外量")
+    total = 0
+    for midi, timbre in slots[:8]:
+        for var in range(pack.variants):
+            pcm, n = pack.render(midi, timbre, var, "fast")
+            if n == 0 or len(pcm) != 2 * n:
+                bad.append("渲染返回空采样或长度不符: %d %s" % (midi, timbre))
+                continue
+            if n != pack.cache_frames(timbre):
+                bad.append("cache_frames 与渲染帧数不一致（体积估算会说谎）")
+            s = _array.array("h")
+            s.frombytes(pcm)
+            peak = max(max(s), -min(s))
+            if peak < 3000:
+                bad.append("采样峰值过低（听不见）: %d %s" % (midi, timbre))
+            if peak > int(0.92 * 32767):
+                bad.append("采样峰值过高（后端叠加会削顶）: %d %s" % (midi, timbre))
+            dur = n / float(A.SAMPLE_RATE)
+            if dur > 0.36:
+                bad.append("单音缓存 %.2fs 过长，快速打字会互相糊成一片" % dur)
+            total += len(pcm)
+    # 整库常驻字节：不渲染、按 cache_frames 逐条累加（抽几个槽位外推会错到几十%）
+    est = sum(pack.cache_frames(t) * 2
+              for _m, t in slots for _v in range(pack.variants))
+    if est > 25 * 1024 * 1024:
+        bad.append("全部采样常驻预计 %.1f MB，超出内存预算" % (est / 1048576.0))
+    if total == 0:
+        bad.append("一个采样都没渲出来")
+    wav = A.wav_bytes(_array.array("h", pcm))
     if wav[:4] != b"RIFF" or wav[8:12] != b"WAVE":
         bad.append("WAV 容器头不正确")
+    if A.wav_bytes(pcm) != wav:
+        bad.append("wav_bytes 对 bytes 与 array 两种输入应当给出同一容器")
     return bad
 
 
@@ -320,6 +345,8 @@ def test_engine_wiring():
             bad.append("槽位 %s 未被引擎登记（兜底音会没声）" % (slot,))
     if len(eng._index) != len(eng._slot_list):
         bad.append("槽位索引与槽位表数量不一致")
+    if eng._nv != eng.pack.variants or eng._nv < 2:
+        bad.append("humanize 变体数与音色包不一致或只有一个变体")
     return bad
 
 
